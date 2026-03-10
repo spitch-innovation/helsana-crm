@@ -1,0 +1,127 @@
+{
+    "outcome": "unique",
+    "hits": [
+        {
+            "family_id": "10384707",
+            "person_count": 1,
+            "members": [
+                {
+                    "GEB_D": "9/24/1952",
+                    "EMAIL_PORTAL": "",
+                    "ZAHLUNGSADRESSETYP_INKASSO": "",
+                    "GESETZ": "KVGO,VVG,VVG,VVG,VVG,",
+                    "PARTNERNR": "10384707",
+                    "GESCHLECHT": "m",
+                    "FRANCHISE": "300.0",
+                    "HAUSARZT": "",
+                    "ZAHLUNGSPROFIL": "Standardzahler",
+                    "ZAHLUNGSMITTEL_EXKASSO": "EZAG (Elektronischer Zahlungsauftrag)",
+                    "STRASSE": "Rue de la Coupe Gordon-Bennett",
+                    "TEL_PORTAL_MOBIL": "",
+                    "ORT": "Le Lignon",
+                    "LAND": "CH",
+                    "ZAHLUNGSMITTEL_INKASSO ": "QR-Rechnung",
+                    "SPRACHE": "FR",
+                    "GESAMTPR\u00c4MIE": "1103.35",
+                    "PRODUKT": "HOSPITAL PLUS BONUS,PREVEA Unfall,SANA,TOP,",
+                    "PRODUKTEPR\u00c4MIE": "670.65,369.3,8.3,22.15,32.95,",
+                    "ZAHLUNGSADRESSETYP_EXKASSO": "Bankverbindung",
+                    "first_name": "Nelson",
+                    "PRODUKT_PORTFOLIO": "Helsana BASIS Standard,HOSPITAL PLUS BONUS,PREVEA Unfall,SANA,TOP,",
+                    "PLZ": "1219",
+                    "BANK_INKASSO": "",
+                    "FAMILY_ID": "10384707",
+                    "BANK_EXKASSO": "UBS Switzerland AG (formerly Credit Suisse)",
+                    "GRUNDVERSICHERUNG_MODELL": "Helsana BASIS Standard",
+                    "HAUSNUMMER": "2C",
+                    "last_name": "Tarca",
+                    "source_row_count": 1,
+                    "source_rows": [
+                        {
+                            "FAMILY_ID": "10384707",
+                            "PARTNERNR": "10384707",
+                            "last_name": "Tarca",
+                            "first_name": "Nelson",
+                            "TEL_PORTAL_MOBIL": "",
+                            "EMAIL_PORTAL": "",
+                            "GEB_D": "9/24/1952",
+                            "GESCHLECHT": "m",
+                            "SPRACHE": "FR",
+                            "STRASSE": "Rue de la Coupe Gordon-Bennett",
+                            "HAUSNUMMER": "2C",
+                            "PLZ": "1219",
+                            "ORT": "Le Lignon",
+                            "LAND": "CH",
+                            "ZAHLUNGSPROFIL": "Standardzahler",
+                            "ZAHLUNGSMITTEL_INKASSO ": "QR-Rechnung",
+                            "ZAHLUNGSADRESSETYP_INKASSO": "",
+                            "BANK_INKASSO": "",
+                            "ZAHLUNGSMITTEL_EXKASSO": "EZAG (Elektronischer Zahlungsauftrag)",
+                            "ZAHLUNGSADRESSETYP_EXKASSO": "Bankverbindung",
+                            "BANK_EXKASSO": "UBS Switzerland AG (formerly Credit Suisse)",
+                            "GRUNDVERSICHERUNG_MODELL": "Helsana BASIS Standard",
+                            "PRODUKT": "HOSPITAL PLUS BONUS,PREVEA Unfall,SANA,TOP,",
+                            "PRODUKT_PORTFOLIO": "Helsana BASIS Standard,HOSPITAL PLUS BONUS,PREVEA Unfall,SANA,TOP,",
+                            "GESETZ": "KVGO,VVG,VVG,VVG,VVG,",
+                            "PRODUKTEPR\u00c4MIE": "670.65,369.3,8.3,22.15,32.95,",
+                            "GESAMTPR\u00c4MIE": "1103.35",
+                            "HAUSARZT": "",
+                            "FRANCHISE": "300.0"
+                        }
+                    ]
+                }
+            ]
+        }
+    ],
+    "verification_questions": [
+        {
+            "tag": "PRODUKT",
+            "field": "PRODUKT",
+            "question": "Can you name at least one of your insured products?",
+            "type": "TEXT",
+            "expected_answers": [
+                "HOSPITAL PLUS BONUS",
+                "PREVEA Unfall",
+                "SANA",
+                "TOP"
+            ]
+        },
+        {
+            "tag": "GESAMTPR\u00c4MIE",
+            "field": "GESAMTPR\u00c4MIE",
+            "question": "What is your total premium?",
+            "type": "NUMBER",
+            "expected_answers": [
+                "1103.35"
+            ]
+        }
+    ],
+    "post_verification_summary": {
+        "bot_handled_intents": [
+            "FRANCHISE_CHANGE",
+            "ADDRESS_CHANGE",
+            "GP_CHANGE"
+        ],
+        "intent_context": {
+            "FRANCHISE_CHANGE": {
+                "current_franchise": "300.0",
+                "available": true
+            },
+            "ADDRESS_CHANGE": {
+                "current_address": {
+                    "strasse": "Rue de la Coupe Gordon-Bennett",
+                    "hausnummer": "2C",
+                    "plz": "1219",
+                    "ort": "Le Lignon",
+                    "land": "CH"
+                },
+                "available": true
+            },
+            "GP_CHANGE": {
+                "current_general_practitioner": "",
+                "basic_insurance_model": "Helsana BASIS Standard",
+                "available": false
+            }
+        }
+    }
+}
