@@ -466,25 +466,28 @@ You will be provided with:
 1. a JSON array of customer records
 2. a raw search query from the user
 
-The query may be:
-- valid JSON
-- broken JSON
-- a messy string
-- an ASR transcript with transcription mistakes
+The query may be valid JSON, broken JSON, a messy string, or an ASR transcript.
 
 Your job:
 - infer the likely search intent
 - fuzzily identify the best matching customer records
+- strictly refuse if there are NO reasonable matches, don't return 'possible'
 
-Rules:
-- Handle typos, phonetic email spellings, broken formatting, and noisy ASR.
+CRITICAL MATCHING RULES:
+- Perform robust FUZZY MATCHING for all fields.
+- EMAIL MATCHING IS CRITICAL: The user input might spell out punctuation phonetically (e.g., "at" instead of "@", "dot" or "punkt" instead of "."). You must ignore case sensitivity, missing punctuation, and slight typos in emails.
+- Phone numbers in the records might have '.0' at the end or spacing differences; ignore these and match on the core digits.
 - Return ONLY a JSON object.
 - Output format MUST be exactly:
 {"matched_partnernrs": ["12345", "67890"]}
 - If no matches are found:
 {"matched_partnernrs": []}
 - No markdown, no explanation, no extra keys.
+- Do not return matches for clearly incorrect content, e.g.:
+   * if the input is: "Davis Chaves Lameirao at my mail punkt com", "Davis.Chaves_Lameirao@mymail.com" 
+     is an obvious option.  But "Leslie.Tagarroso_Marques@mymail.com" is absolutely not.
 """
+
 
     user_prompt = (
         f"Raw Search Input / ASR Transcript:\n{query_text}\n\n"
@@ -493,13 +496,12 @@ Rules:
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-5-mini",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
             response_format={"type": "json_object"},
-            temperature=0.1,
         )
         llm_result = json.loads(response.choices[0].message.content)
         matched_ids = llm_result.get("matched_partnernrs", [])
