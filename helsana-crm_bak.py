@@ -1,14 +1,14 @@
 import json
 import random
 import re
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set
 
 import pandas as pd
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from openai import OpenAI
 
-app = FastAPI(title="Customer Search API with Hybrid Exact + LLM Fuzzy Match")
+app = FastAPI(title="Customer Search API with LLM Fuzzy Match")
 
 DATA_FILE = "./data/helsana-crm.csv"
 df = pd.read_csv(DATA_FILE)
@@ -26,10 +26,6 @@ df = df.fillna("")
 
 for col in df.columns:
     df[col] = df[col].astype(str).str.strip()
-
-# normalize one annoying column if present
-if "ZAHLUNGSMITTEL_INKASSO " in df.columns and "ZAHLUNGSMITTEL_INKASSO" not in df.columns:
-    df.rename(columns={"ZAHLUNGSMITTEL_INKASSO ": "ZAHLUNGSMITTEL_INKASSO"}, inplace=True)
 
 SEARCHABLE_COLUMNS = [
     "FAMILY_ID",
@@ -66,74 +62,6 @@ def normalize_value(value: Any) -> str:
     return str(value).strip()
 
 
-def normalize_text(value: Any) -> str:
-    s = str(value or "").strip().lower()
-    s = s.replace("ß", "ss")
-    s = re.sub(r"\s+", " ", s)
-    return s
-
-
-def normalize_phone(value: Any) -> str:
-    s = str(value or "").strip()
-    s = re.sub(r"\.0$", "", s)
-    digits = re.sub(r"\D", "", s)
-    return digits
-
-
-def normalize_email(value: Any) -> str:
-    s = str(value or "").strip().lower()
-
-    # support spoken forms in direct deterministic queries too
-    replacements = [
-        (r"\s+at\s+", "@"),
-        (r"\s+ät\s+", "@"),
-        (r"\s+arroba\s+", "@"),
-        (r"\s+dot\s+", "."),
-        (r"\s+punkt\s+", "."),
-    ]
-    for pattern, repl in replacements:
-        s = re.sub(pattern, repl, s)
-
-    s = s.replace(" ", "")
-    return s
-
-
-def normalize_date(value: Any) -> str:
-    s = str(value or "").strip()
-    if not s:
-        return ""
-
-    # try pandas date normalization
-    try:
-        dt = pd.to_datetime(s, errors="coerce")
-        if pd.notna(dt):
-            return dt.strftime("%Y-%m-%d")
-    except Exception:
-        pass
-
-    return s
-
-
-def parse_search_payload(raw_text: str) -> Dict[str, Any]:
-    """
-    Accept either:
-    - JSON body
-    - raw text fallback
-    """
-    raw_text = (raw_text or "").strip()
-    if not raw_text:
-        return {}
-
-    try:
-        parsed = json.loads(raw_text)
-        if isinstance(parsed, dict):
-            return parsed
-    except Exception:
-        pass
-
-    return {"query_text": raw_text}
-
-
 def contains_token(value: str, token: str) -> bool:
     parts = [p.strip().upper() for p in str(value).split(",") if p.strip()]
     return token.strip().upper() in parts
@@ -154,6 +82,7 @@ def count_products(value: str) -> int:
 
 def format_product_list(value: str) -> List[str]:
     parts = [p.strip() for p in str(value).split(",") if p.strip()]
+    # preserve order, dedupe
     out = []
     seen = set()
     for p in parts:
@@ -169,7 +98,10 @@ def extract_doctor_name(value: str) -> str:
     if not s:
         return ""
 
+    # common cleanup for values like "Dr. Max Muster, Zürich"
     s = re.sub(r"\s+", " ", s).strip()
+
+    # if semicolon/comma-delimited, take first meaningful chunk
     chunks = [c.strip() for c in re.split(r"[;,|]", s) if c.strip()]
     if chunks:
         return chunks[0]
@@ -183,6 +115,8 @@ def is_benefit_plus_model(value: str) -> bool:
 
 
 def should_ask_franchise(row: Dict[str, Any]) -> bool:
+    # conservative default:
+    # ask only when there is KVG/KVGO and franchise is non-empty/non-zero-ish
     gesetz = str(row.get("GESETZ", ""))
     franchise = str(row.get("FRANCHISE", "")).strip()
     if not has_kvg(gesetz):
@@ -302,194 +236,6 @@ def determine_outcome(hits: List[Dict[str, Any]]) -> str:
 
 
 # ---------------------------------------------------------
-# Deterministic search
-# ---------------------------------------------------------
-def row_matches_customer_id(row: Dict[str, Any], customer_id: str) -> bool:
-    cid = normalize_value(customer_id)
-    if not cid:
-        return False
-    return (
-        normalize_value(row.get("FAMILY_ID", "")) == cid
-        or normalize_value(row.get("PARTNERNR", "")) == cid
-    )
-
-
-def row_matches_first_name(row: Dict[str, Any], first_name: str) -> bool:
-    return normalize_text(row.get("first_name", "")) == normalize_text(first_name)
-
-
-def row_matches_last_name(row: Dict[str, Any], last_name: str) -> bool:
-    return normalize_text(row.get("last_name", "")) == normalize_text(last_name)
-
-
-def row_matches_phone(row: Dict[str, Any], phone: str) -> bool:
-    q = normalize_phone(phone)
-    if not q:
-        return False
-    return normalize_phone(row.get("TEL_PORTAL_MOBIL", "")) == q
-
-
-def row_matches_email(row: Dict[str, Any], email: str) -> bool:
-    q = normalize_email(email)
-    if not q:
-        return False
-    return normalize_email(row.get("EMAIL_PORTAL", "")) == q
-
-
-def row_matches_birthday(row: Dict[str, Any], birthday: str) -> bool:
-    q = normalize_date(birthday)
-    if not q:
-        return False
-    return normalize_date(row.get("GEB_D", "")) == q
-
-
-def row_matches_address(row: Dict[str, Any], address: Dict[str, Any]) -> bool:
-    if not address:
-        return False
-
-    checks = []
-    if address.get("strasse"):
-        checks.append(
-            normalize_text(row.get("STRASSE", "")) == normalize_text(address.get("strasse", ""))
-        )
-    if address.get("hausnummer"):
-        checks.append(
-            normalize_text(row.get("HAUSNUMMER", "")) == normalize_text(address.get("hausnummer", ""))
-        )
-    if address.get("plz"):
-        checks.append(
-            normalize_text(row.get("PLZ", "")) == normalize_text(address.get("plz", ""))
-        )
-
-    return len(checks) > 0 and all(checks)
-
-
-def deterministic_match_partnernrs(payload: Dict[str, Any]) -> List[str]:
-    """
-    Deterministic exact/normalized filter.
-    All provided fields must match.
-    """
-    customer_id = normalize_value(payload.get("customer_id", ""))
-    first_name = normalize_value(payload.get("first_name", ""))
-    last_name = normalize_value(payload.get("last_name", ""))
-    phone = normalize_value(payload.get("tel_portal_mobil", ""))
-    email = normalize_value(payload.get("email_portal", ""))
-    birthday = normalize_value(payload.get("birthday", ""))
-    address = payload.get("address") if isinstance(payload.get("address"), dict) else {}
-
-    have_any_structured = any([
-        customer_id,
-        first_name,
-        last_name,
-        phone,
-        email,
-        birthday,
-        bool(address),
-    ])
-    if not have_any_structured:
-        return []
-
-    matched_partnernrs: Set[str] = set()
-
-    for row in df.to_dict(orient="records"):
-        if customer_id and not row_matches_customer_id(row, customer_id):
-            continue
-        if first_name and not row_matches_first_name(row, first_name):
-            continue
-        if last_name and not row_matches_last_name(row, last_name):
-            continue
-        if phone and not row_matches_phone(row, phone):
-            continue
-        if email and not row_matches_email(row, email):
-            continue
-        if birthday and not row_matches_birthday(row, birthday):
-            continue
-        if address and not row_matches_address(row, address):
-            continue
-
-        partnernr = normalize_value(row.get("PARTNERNR", ""))
-        if partnernr:
-            matched_partnernrs.add(partnernr)
-
-    return sorted(matched_partnernrs)
-
-
-def deterministic_lookup(payload: Dict[str, Any]) -> Tuple[List[str], str]:
-    """
-    Returns:
-      matched_partnernrs, strategy_used
-    strategy_used:
-      - deterministic_unique
-      - deterministic_non_unique
-      - deterministic_none
-    """
-    matched = deterministic_match_partnernrs(payload)
-
-    hits = build_family_hits_from_partnernrs(matched)
-    outcome = determine_outcome(hits)
-
-    if outcome == "unique":
-        return matched, "deterministic_unique"
-    if outcome == "multi":
-        return matched, "deterministic_non_unique"
-    return matched, "deterministic_none"
-
-
-# ---------------------------------------------------------
-# LLM fallback search
-# ---------------------------------------------------------
-def llm_fuzzy_lookup(raw_query_text: str) -> List[str]:
-
-    system_prompt = """You are an advanced fuzzy search assistant for a customer database.
-You will be provided with:
-1. a JSON array of customer records
-2. a raw search query from the user
-
-The query may be valid JSON, broken JSON, a messy string, or an ASR transcript.
-
-Your job:
-- infer the likely search intent
-- fuzzily identify the best matching customer records
-- strictly refuse if there are NO reasonable matches, don't return 'possible'
-
-CRITICAL MATCHING RULES:
-- Perform robust FUZZY MATCHING for all fields.
-- EMAIL MATCHING IS CRITICAL: The user input might spell out punctuation phonetically (e.g., "at" instead of "@", "dot" or "punkt" instead of "."). You must ignore case sensitivity, missing punctuation, and slight typos in emails.
-- Phone numbers in the records might have '.0' at the end or spacing differences; ignore these and match on the core digits.
-- Return ONLY a JSON object.
-- Output format MUST be exactly:
-{"matched_partnernrs": ["12345", "67890"]}
-- If no matches are found:
-{"matched_partnernrs": []}
-- No markdown, no explanation, no extra keys.
-- Do not return matches for clearly incorrect content, e.g.:
-   * if the input is: "Davis Chaves Lameirao at my mail punkt com", "Davis.Chaves_Lameirao@mymail.com" 
-     is an obvious option.  But "Leslie.Tagarroso_Marques@mymail.com" is absolutely not.
-"""
-
-    user_prompt = (
-        f"Raw Search Input / ASR Transcript:\n{raw_query_text}\n\n"
-        f"Customer Records:\n{SEARCH_CORPUS_JSON}"
-    )
-
-    try:
-        response = client.chat.completions.create(
-            model="gpt-5-mini",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            response_format={"type": "json_object"},
-        )
-        llm_result = json.loads(response.choices[0].message.content)
-        matched_ids = llm_result.get("matched_partnernrs", [])
-        return [str(x).strip() for x in matched_ids if str(x).strip()]
-    except Exception as e:
-        print(f"LLM Call Failed: {e}")
-        return []
-
-
-# ---------------------------------------------------------
 # Allowed verification questions
 # ---------------------------------------------------------
 def q_bank_exkasso_condition(row: Dict[str, Any]) -> bool:
@@ -497,7 +243,7 @@ def q_bank_exkasso_condition(row: Dict[str, Any]) -> bool:
 
 
 def q_bank_exkasso_extract(val: Any) -> str:
-    return str(val).strip()
+    return str(val).trim() if hasattr(str(val), "trim") else str(val).strip()
 
 
 def q_hausarzt_condition(row: Dict[str, Any]) -> bool:
@@ -610,6 +356,13 @@ ALL_QUESTIONS = [
 
 
 def build_verification_questions_for_person(person: Dict[str, Any], count: int = 2) -> List[Dict[str, Any]]:
+    """
+    Evaluate conditions row-by-row on source_rows.
+    A question is eligible if:
+    - at least one source row satisfies the condition
+    - extracted answer is non-empty
+    - all distinct valid extracted answers are preserved
+    """
     source_rows = person.get("source_rows", [])
     candidates = []
 
@@ -654,6 +407,10 @@ def build_verification_questions_for_person(person: Dict[str, Any], count: int =
 
 
 def build_post_verification_summary(person: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Provide safe structured info the bot can use AFTER successful verification.
+    This is not for pre-verification display.
+    """
     summary = {
         "bot_handled_intents": BOT_HANDLED_INTENTS,
         "intent_context": {},
@@ -694,31 +451,67 @@ def build_post_verification_summary(person: Dict[str, Any]) -> Dict[str, Any]:
 @app.post("/search")
 async def search_customers_fuzzy(request: Request):
     raw_body = await request.body()
-    raw_text = raw_body.decode("utf-8").strip()
+    query_text = raw_body.decode("utf-8").strip()
 
-    if not raw_text:
+    if not query_text:
         return {
             "outcome": "none",
             "hits": [],
             "verification_questions": [],
             "post_verification_summary": None,
-            "lookup_strategy": "empty_input",
         }
 
-    payload = parse_search_payload(raw_text)
+    system_prompt = """You are an advanced fuzzy search assistant for a customer database.
+You will be provided with:
+1. a JSON array of customer records
+2. a raw search query from the user
 
-    # 1) deterministic first
-    matched_ids, strategy = deterministic_lookup(payload)
+The query may be valid JSON, broken JSON, a messy string, or an ASR transcript.
+
+Your job:
+- infer the likely search intent
+- fuzzily identify the best matching customer records
+- strictly refuse if there are NO reasonable matches, don't return 'possible'
+
+CRITICAL MATCHING RULES:
+- Perform robust FUZZY MATCHING for all fields.
+- EMAIL MATCHING IS CRITICAL: The user input might spell out punctuation phonetically (e.g., "at" instead of "@", "dot" or "punkt" instead of "."). You must ignore case sensitivity, missing punctuation, and slight typos in emails.
+- Phone numbers in the records might have '.0' at the end or spacing differences; ignore these and match on the core digits.
+- Return ONLY a JSON object.
+- Output format MUST be exactly:
+{"matched_partnernrs": ["12345", "67890"]}
+- If no matches are found:
+{"matched_partnernrs": []}
+- No markdown, no explanation, no extra keys.
+- Do not return matches for clearly incorrect content, e.g.:
+   * if the input is: "Davis Chaves Lameirao at my mail punkt com", "Davis.Chaves_Lameirao@mymail.com" 
+     is an obvious option.  But "Leslie.Tagarroso_Marques@mymail.com" is absolutely not.
+"""
+
+
+    user_prompt = (
+        f"Raw Search Input / ASR Transcript:\n{query_text}\n\n"
+        f"Customer Records:\n{SEARCH_CORPUS_JSON}"
+    )
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-5-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={"type": "json_object"},
+        )
+        llm_result = json.loads(response.choices[0].message.content)
+        matched_ids = llm_result.get("matched_partnernrs", [])
+        matched_ids = [str(x).strip() for x in matched_ids if str(x).strip()]
+    except Exception as e:
+        print(f"LLM Call Failed: {e}")
+        matched_ids = []
 
     hits = build_family_hits_from_partnernrs(matched_ids)
     outcome = determine_outcome(hits)
-
-    # 2) fall back to LLM only if deterministic did NOT uniquely identify a person
-    if outcome != "unique":
-        llm_matched_ids = llm_fuzzy_lookup(raw_text)
-        hits = build_family_hits_from_partnernrs(llm_matched_ids)
-        outcome = determine_outcome(hits)
-        strategy = "llm_fallback"
 
     verification_questions: List[Dict[str, Any]] = []
     post_verification_summary = None
@@ -726,6 +519,9 @@ async def search_customers_fuzzy(request: Request):
     if outcome == "unique":
         unique_person = extract_unique_persons_from_hits(hits)[0]["person"]
         verification_questions = build_verification_questions_for_person(unique_person, count=2)
+
+        # Intentionally included but meant for use only after verification succeeds.
+        # If you want stricter separation, move this entirely to a dedicated endpoint.
         post_verification_summary = build_post_verification_summary(unique_person)
 
     return {
@@ -733,7 +529,6 @@ async def search_customers_fuzzy(request: Request):
         "hits": hits,
         "verification_questions": verification_questions,
         "post_verification_summary": post_verification_summary,
-        "lookup_strategy": strategy,
     }
 
 
@@ -774,6 +569,7 @@ async def get_verification_questions(payload: Dict[str, Any]):
 
 # ---------------------------------------------------------
 # Post-verification data endpoint
+# Call this only after verification has succeeded
 # ---------------------------------------------------------
 @app.post("/post-verification-summary")
 async def get_post_verification_summary(payload: Dict[str, Any]):
