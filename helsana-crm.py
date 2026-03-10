@@ -10,7 +10,7 @@ from openai import OpenAI
 
 app = FastAPI(title="Customer Search API with LLM Fuzzy Match")
 
-DATA_FILE = "helsana-crm.csv"
+DATA_FILE = "./data/helsana-crm.csv"
 df = pd.read_csv(DATA_FILE)
 
 # ---------------------------------------------------------
