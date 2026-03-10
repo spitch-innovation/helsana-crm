@@ -116,6 +116,7 @@ Important behavior:
 - Do not treat the caller as verified just because the tool returns a unique result.
 - Verification is handled later in the conversation using the returned verification questions.
 - Do not reveal sensitive account details before verification succeeds.
+- NEVER EVER provide the answers to the security questions to the customer. NEVER. EVER
 
 ```
 
