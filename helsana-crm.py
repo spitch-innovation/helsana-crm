@@ -1,7 +1,7 @@
 import json
 import random
 import re
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Set, Tuple
 
 import pandas as pd
 import uvicorn
@@ -27,7 +27,6 @@ df = df.fillna("")
 for col in df.columns:
     df[col] = df[col].astype(str).str.strip()
 
-# normalize one annoying column if present
 if "ZAHLUNGSMITTEL_INKASSO " in df.columns and "ZAHLUNGSMITTEL_INKASSO" not in df.columns:
     df.rename(columns={"ZAHLUNGSMITTEL_INKASSO ": "ZAHLUNGSMITTEL_INKASSO"}, inplace=True)
 
@@ -82,8 +81,6 @@ def normalize_phone(value: Any) -> str:
 
 def normalize_email(value: Any) -> str:
     s = str(value or "").strip().lower()
-
-    # support spoken forms in direct deterministic queries too
     replacements = [
         (r"\s+at\s+", "@"),
         (r"\s+ät\s+", "@"),
@@ -93,7 +90,6 @@ def normalize_email(value: Any) -> str:
     ]
     for pattern, repl in replacements:
         s = re.sub(pattern, repl, s)
-
     s = s.replace(" ", "")
     return s
 
@@ -102,24 +98,16 @@ def normalize_date(value: Any) -> str:
     s = str(value or "").strip()
     if not s:
         return ""
-
-    # try pandas date normalization
     try:
         dt = pd.to_datetime(s, errors="coerce")
         if pd.notna(dt):
             return dt.strftime("%Y-%m-%d")
     except Exception:
         pass
-
     return s
 
 
 def parse_search_payload(raw_text: str) -> Dict[str, Any]:
-    """
-    Accept either:
-    - JSON body
-    - raw text fallback
-    """
     raw_text = (raw_text or "").strip()
     if not raw_text:
         return {}
@@ -168,12 +156,10 @@ def extract_doctor_name(value: str) -> str:
     s = str(value).strip()
     if not s:
         return ""
-
     s = re.sub(r"\s+", " ", s).strip()
     chunks = [c.strip() for c in re.split(r"[;,|]", s) if c.strip()]
     if chunks:
         return chunks[0]
-
     return s
 
 
@@ -262,7 +248,6 @@ def build_family_hits_from_partnernrs(matched_partnernrs: List[str]) -> List[Dic
     for family_id, family_group in matched_df.groupby("FAMILY_ID", dropna=False):
         family_rows = family_group.to_dict(orient="records")
         merged_members = group_rows_by_person(family_rows)
-
         hits.append({
             "family_id": family_id,
             "person_count": len(merged_members),
@@ -299,6 +284,62 @@ def determine_outcome(hits: List[Dict[str, Any]]) -> str:
     if len(unique_persons) == 1:
         return "unique"
     return "multi"
+
+
+# ---------------------------------------------------------
+# Safe shaping helpers
+# ---------------------------------------------------------
+def mask_phone(value: str) -> str:
+    digits = normalize_phone(value)
+    if len(digits) < 4:
+        return ""
+    return f"***{digits[-4:]}"
+
+
+def mask_email(value: str) -> str:
+    email = normalize_email(value)
+    if not email or "@" not in email:
+        return ""
+    local, domain = email.split("@", 1)
+    if not local:
+        return f"***@{domain}"
+    return f"{local[:1]}***@{domain}"
+
+
+def safe_member_public(member: Dict[str, Any]) -> Dict[str, Any]:
+    first_name = normalize_value(member.get("first_name", ""))
+    last_name = normalize_value(member.get("last_name", ""))
+    display_name = " ".join([x for x in [first_name, last_name] if x]).strip()
+
+    return {
+        "family_id": normalize_value(member.get("FAMILY_ID", "")) or normalize_value(member.get("family_id", "")),
+        "partnernr": normalize_value(member.get("PARTNERNR", "")),
+        "display_name": display_name,
+    }
+
+
+def safe_hit_public(hit: Dict[str, Any]) -> Dict[str, Any]:
+    members = hit.get("members", [])
+    return {
+        "family_id": normalize_value(hit.get("family_id", "")),
+        "person_count": hit.get("person_count", len(members)),
+        "members": [safe_member_public(m) for m in members],
+    }
+
+def build_public_search_response(outcome, hits, lookup_strategy, verification_questions=None):
+    return {
+        "outcome": outcome,
+        "lookup_strategy": lookup_strategy,
+        "hits": [safe_hit_public(hit) for hit in hits],
+        "verification_required": outcome == "unique",
+        "verification_questions": verification_questions or [],
+    }
+
+def build_split_response(public: Dict[str, Any], private: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "public": public,
+        "private": private,
+    }
 
 
 # ---------------------------------------------------------
@@ -349,26 +390,16 @@ def row_matches_address(row: Dict[str, Any], address: Dict[str, Any]) -> bool:
 
     checks = []
     if address.get("strasse"):
-        checks.append(
-            normalize_text(row.get("STRASSE", "")) == normalize_text(address.get("strasse", ""))
-        )
+        checks.append(normalize_text(row.get("STRASSE", "")) == normalize_text(address.get("strasse", "")))
     if address.get("hausnummer"):
-        checks.append(
-            normalize_text(row.get("HAUSNUMMER", "")) == normalize_text(address.get("hausnummer", ""))
-        )
+        checks.append(normalize_text(row.get("HAUSNUMMER", "")) == normalize_text(address.get("hausnummer", "")))
     if address.get("plz"):
-        checks.append(
-            normalize_text(row.get("PLZ", "")) == normalize_text(address.get("plz", ""))
-        )
+        checks.append(normalize_text(row.get("PLZ", "")) == normalize_text(address.get("plz", "")))
 
     return len(checks) > 0 and all(checks)
 
 
 def deterministic_match_partnernrs(payload: Dict[str, Any]) -> List[str]:
-    """
-    Deterministic exact/normalized filter.
-    All provided fields must match.
-    """
     customer_id = normalize_value(payload.get("customer_id", ""))
     first_name = normalize_value(payload.get("first_name", ""))
     last_name = normalize_value(payload.get("last_name", ""))
@@ -415,16 +446,7 @@ def deterministic_match_partnernrs(payload: Dict[str, Any]) -> List[str]:
 
 
 def deterministic_lookup(payload: Dict[str, Any]) -> Tuple[List[str], str]:
-    """
-    Returns:
-      matched_partnernrs, strategy_used
-    strategy_used:
-      - deterministic_unique
-      - deterministic_non_unique
-      - deterministic_none
-    """
     matched = deterministic_match_partnernrs(payload)
-
     hits = build_family_hits_from_partnernrs(matched)
     outcome = determine_outcome(hits)
 
@@ -439,7 +461,6 @@ def deterministic_lookup(payload: Dict[str, Any]) -> Tuple[List[str], str]:
 # LLM fallback search
 # ---------------------------------------------------------
 def llm_fuzzy_lookup(raw_query_text: str) -> List[str]:
-
     system_prompt = """You are an advanced fuzzy search assistant for a customer database.
 You will be provided with:
 1. a JSON array of customer records
@@ -454,7 +475,7 @@ Your job:
 
 CRITICAL MATCHING RULES:
 - Perform robust FUZZY MATCHING for all fields.
-- EMAIL MATCHING IS CRITICAL: The user input might spell out punctuation phonetically (e.g., "at" instead of "@", "dot" or "punkt" instead of "."). You must ignore case sensitivity, missing punctuation, and slight typos in emails.
+- EMAIL MATCHING IS CRITICAL: The user input might spell out punctuation phonetically.
 - Phone numbers in the records might have '.0' at the end or spacing differences; ignore these and match on the core digits.
 - Return ONLY a JSON object.
 - Output format MUST be exactly:
@@ -462,9 +483,6 @@ CRITICAL MATCHING RULES:
 - If no matches are found:
 {"matched_partnernrs": []}
 - No markdown, no explanation, no extra keys.
-- Do not return matches for clearly incorrect content, e.g.:
-   * if the input is: "Davis Chaves Lameirao at my mail punkt com", "Davis.Chaves_Lameirao@mymail.com" 
-     is an obvious option.  But "Leslie.Tagarroso_Marques@mymail.com" is absolutely not.
 """
 
     user_prompt = (
@@ -636,7 +654,6 @@ def build_verification_questions_for_person(person: Dict[str, Any], count: int =
                     ans = str(extracted).strip()
                     if ans:
                         valid_answers.add(ans)
-
             except Exception:
                 continue
 
@@ -688,6 +705,18 @@ def build_post_verification_summary(person: Dict[str, Any]) -> Dict[str, Any]:
     return summary
 
 
+def strip_expected_answers_for_public(questions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    out = []
+    for q in questions:
+        out.append({
+            "tag": q.get("tag"),
+            "field": q.get("field"),
+            "question": q.get("question"),
+            "type": q.get("type"),
+        })
+    return out
+
+
 # ---------------------------------------------------------
 # Search endpoint
 # ---------------------------------------------------------
@@ -697,23 +726,27 @@ async def search_customers_fuzzy(request: Request):
     raw_text = raw_body.decode("utf-8").strip()
 
     if not raw_text:
-        return {
-            "outcome": "none",
-            "hits": [],
-            "verification_questions": [],
-            "post_verification_summary": None,
-            "lookup_strategy": "empty_input",
-        }
+        return build_split_response(
+            public={
+                "outcome": "none",
+                "hits": [],
+                "lookup_strategy": "empty_input",
+                "verification_required": False,
+            },
+            private={
+                "hits": [],
+                "verification_questions": [],
+                "post_verification_summary": None,
+                "lookup_strategy": "empty_input",
+            },
+        )
 
     payload = parse_search_payload(raw_text)
 
-    # 1) deterministic first
     matched_ids, strategy = deterministic_lookup(payload)
-
     hits = build_family_hits_from_partnernrs(matched_ids)
     outcome = determine_outcome(hits)
 
-    # 2) fall back to LLM only if deterministic did NOT uniquely identify a person
     if outcome != "unique":
         llm_matched_ids = llm_fuzzy_lookup(raw_text)
         hits = build_family_hits_from_partnernrs(llm_matched_ids)
@@ -728,13 +761,17 @@ async def search_customers_fuzzy(request: Request):
         verification_questions = build_verification_questions_for_person(unique_person, count=2)
         post_verification_summary = build_post_verification_summary(unique_person)
 
-    return {
-        "outcome": outcome,
-        "hits": hits,
-        "verification_questions": verification_questions,
-        "post_verification_summary": post_verification_summary,
-        "lookup_strategy": strategy,
-    }
+    public_questions = strip_expected_answers_for_public(verification_questions)
+
+    return build_split_response(
+        public=build_public_search_response(outcome, hits, strategy, public_questions),
+        private={
+            "hits": hits,
+            "verification_questions": verification_questions,
+            "post_verification_summary": post_verification_summary,
+            "lookup_strategy": strategy,
+        },
+    )
 
 
 # ---------------------------------------------------------
@@ -765,13 +802,120 @@ async def get_verification_questions(payload: Dict[str, Any]):
     merged_person = merge_person_rows(matched_df.to_dict(orient="records"))
     questions = build_verification_questions_for_person(merged_person, count=count)
 
+    return build_split_response(
+        public={
+            "family_id": family_id,
+            "partnernr": partnernr,
+            "verification_questions": strip_expected_answers_for_public(questions),
+        },
+        private={
+            "family_id": family_id,
+            "partnernr": partnernr,
+            "verification_questions": questions,
+        },
+    )
+
+# ---------------------------------------------------------
+# LLM-ready post-verification context endpoint
+# ---------------------------------------------------------
+@app.post("/llm-post-verification-context")
+async def get_llm_post_verification_context(payload: Dict[str, Any]):
+    family_id = normalize_value(payload.get("family_id", ""))
+    partnernr = normalize_value(payload.get("partnernr", ""))
+
+    if not family_id or not partnernr:
+        raise HTTPException(status_code=400, detail="family_id and partnernr are required")
+
+    matched_df = df[
+        (df["FAMILY_ID"] == family_id) &
+        (df["PARTNERNR"] == partnernr)
+    ].copy()
+
+    if matched_df.empty:
+        raise HTTPException(status_code=404, detail="person not found")
+
+    merged_person = merge_person_rows(matched_df.to_dict(orient="records"))
+    summary = build_post_verification_summary(merged_person)
+
+    bot_handled_intents = summary.get("bot_handled_intents", []) or []
+    intent_context = summary.get("intent_context", {}) or {}
+
+    llm_instruction = (
+        "The caller has already been successfully verified. "
+        "You may now use the verified customer context below.\n\n"
+
+        "You are Sana, a Helsana support agent for verified existing customers. "
+        "Always speak English. "
+        "Respond concisely, clearly, and naturally.\n\n"
+
+        "GLOBAL SUPPORTED INTENTS:\n"
+        "The only intents this assistant can ever handle are:\n"
+        "- FRANCHISE_CHANGE\n"
+        "- ADDRESS_CHANGE\n"
+        "- GP_CHANGE\n\n"
+
+        "Any request outside these three intents is always unsupported and must be refused politely.\n\n"
+
+        "CUSTOMER-SPECIFIC AVAILABILITY:\n"
+        "Even among those three supported intents, not every intent is available for every customer.\n"
+        "For this verified caller, check customer_context[intent].available before helping.\n"
+        "An intent is actionable only if:\n"
+        "1. it is one of the three globally supported intents above, and\n"
+        "2. customer_context[intent].available is true.\n\n"
+
+        "If an intent is one of the three supported intents but customer_context[intent].available is false, "
+        "you must not perform that intent. "
+        "Instead, explain briefly that this service is not available in the caller's current context.\n\n"
+
+        "Use customer_context as verified account context. "
+        "You may refer directly to this information when answering the caller.\n\n"
+
+        "Behavior rules:\n"
+        "- Only use information present in customer_context.\n"
+        "- Do not invent missing facts, policies, prices, eligibility rules, or unsupported actions.\n"
+        "- If a field is empty, say so plainly.\n"
+        "- If the caller asks for current account information related to one of the three supported intents, answer directly from customer_context.\n"
+        "- After answering a context question, continue helping only within intents that are both globally supported and available for this customer.\n\n"
+
+        "Intent-specific guidance:\n"
+        "- FRANCHISE_CHANGE: you may discuss the current franchise if present.\n"
+        "- ADDRESS_CHANGE: you may discuss the current saved address if present.\n"
+        "- GP_CHANGE: you may discuss the current general practitioner and insurance model context if present.\n\n"
+
+        "Decision policy:\n"
+        "- If the request matches one of the three globally supported intents and it is available for this customer, help with it.\n"
+        "- If the request matches one of the three globally supported intents but it is unavailable for this customer, explain that it is not available in the current context.\n"
+        "- If the request is outside the three globally supported intents, refuse politely.\n"
+        "- Stay strictly within the three globally supported intents and the provided customer_context."
+    )
+
     return {
-        "family_id": family_id,
-        "partnernr": partnernr,
-        "verification_questions": questions,
+        "public": {
+            "verified": True,
+            "bot_handled_intents": bot_handled_intents,
+            "intent_context": intent_context,
+            "llm_context": {
+                "allowed_global_intents": [
+                    "FRANCHISE_CHANGE",
+                    "ADDRESS_CHANGE",
+                    "GP_CHANGE",
+                ],
+                "customer_available_intents": [
+                    intent_name
+                    for intent_name, context in intent_context.items()
+                    if isinstance(context, dict) and context.get("available") is True
+                ],
+                "customer_context": intent_context,
+                "instruction": llm_instruction,
+            },
+        },
+        "private": {
+            "family_id": family_id,
+            "partnernr": partnernr,
+            "post_verification_summary": summary,
+        },
     }
-
-
+    
 # ---------------------------------------------------------
 # Post-verification data endpoint
 # ---------------------------------------------------------
@@ -792,13 +936,181 @@ async def get_post_verification_summary(payload: Dict[str, Any]):
         raise HTTPException(status_code=404, detail="person not found")
 
     merged_person = merge_person_rows(matched_df.to_dict(orient="records"))
+    summary = build_post_verification_summary(merged_person)
+
+    return build_split_response(
+        public={
+            "family_id": family_id,
+            "partnernr": partnernr,
+            "post_verification_summary": summary,
+        },
+        private={
+            "family_id": family_id,
+            "partnernr": partnernr,
+            "post_verification_summary": summary,
+        },
+    )
+
+# ---------------------------------------------------------
+# Verification answer check (guarded fuzzy match)
+# ---------------------------------------------------------
+def normalize_verification_number(value: Any) -> str:
+    return str(value or "").replace(",", ".").replace(" ", "").strip()
+
+
+def normalize_verification_text(value: Any) -> str:
+    s = str(value or "").strip().lower()
+    s = s.replace("ß", "ss")
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+
+def deterministic_verify_answer(question_type: str, proposed_answer: str, expected_answers: List[str]) -> bool:
+    qtype = str(question_type or "TEXT").upper()
+    if qtype == "NUMBER":
+        proposed = normalize_verification_number(proposed_answer)
+        return any(proposed == normalize_verification_number(x) for x in expected_answers if str(x).strip())
+
+    proposed = normalize_verification_text(proposed_answer)
+    for expected in expected_answers:
+        exp = normalize_verification_text(expected)
+        if not exp:
+            continue
+        if proposed == exp:
+            return True
+        if proposed in exp or exp in proposed:
+            return True
+
+    return False
+
+
+def llm_verify_answer(question: str, question_type: str, proposed_answer: str, expected_answers: List[str]) -> Dict[str, Any]:
+    """
+    Very guarded fuzzy verifier:
+    - robust to ASR / pronunciation / minor spelling variation
+    - not meant to be permissive to semantically different answers
+    """
+    system_prompt = """You are a strict verification matcher for insurance call-center identity verification.
+
+Your task is to compare:
+1. a verification question
+2. a caller's proposed answer (possibly ASR-noisy)
+3. a small list of allowed expected answers
+
+You must decide whether the proposed answer should count as a valid match.
+
+Rules:
+- Be robust to ASR mistakes, minor spelling errors, accents, punctuation differences, singular/plural variation, and small phonetic confusions.
+- Accept obvious ASR confusions like:
+  - "echo" vs "eco"
+  - "prevea unfall" vs "prevea unfall"
+  - mild tokenization issues
+- For NUMBER questions:
+  - only accept if the numeric value is effectively the same
+  - do not accept nearby numbers
+- For TEXT questions:
+  - accept only if the proposed answer is clearly referring to one of the expected answers
+  - do not accept semantically different products, banks, doctors, insurance models, or payment methods
+  - do not be generous across different entities
+- If uncertain, return false.
+- Never invent new expected answers.
+- Return ONLY JSON in exactly this shape:
+{"matched": true, "matched_expected_answer": "..."}
+
+or
+
+{"matched": false, "matched_expected_answer": null}
+"""
+
+    user_prompt = json.dumps(
+        {
+            "question": question,
+            "question_type": question_type,
+            "proposed_answer": proposed_answer,
+            "expected_answers": expected_answers,
+        },
+        ensure_ascii=False,
+    )
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-5-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={"type": "json_object"},
+        )
+        parsed = json.loads(response.choices[0].message.content or "{}")
+        return {
+            "matched": bool(parsed.get("matched", False)),
+            "matched_expected_answer": parsed.get("matched_expected_answer"),
+        }
+    except Exception as e:
+        print(f"LLM verification call failed: {e}")
+        return {
+            "matched": False,
+            "matched_expected_answer": None,
+        }
+
+
+@app.post("/verify-answer")
+async def verify_answer(payload: Dict[str, Any]):
+    question = str(payload.get("question", "")).strip()
+    question_type = str(payload.get("type", "TEXT")).strip().upper()
+    proposed_answer = str(payload.get("proposed_answer", "")).strip()
+    expected_answers = payload.get("expected_answers", [])
+
+    if not proposed_answer:
+        raise HTTPException(status_code=400, detail="proposed_answer is required")
+
+    if not isinstance(expected_answers, list) or not expected_answers:
+        raise HTTPException(status_code=400, detail="expected_answers must be a non-empty list")
+
+    expected_answers = [str(x).strip() for x in expected_answers if str(x).strip()]
+    if not expected_answers:
+        raise HTTPException(status_code=400, detail="expected_answers must contain at least one non-empty value")
+
+    # 1) deterministic fast path
+    deterministic_match = deterministic_verify_answer(
+        question_type=question_type,
+        proposed_answer=proposed_answer,
+        expected_answers=expected_answers,
+    )
+    if deterministic_match:
+        return {
+            "matched": True,
+            "method": "deterministic",
+            "matched_expected_answer": next(
+                (
+                    x for x in expected_answers
+                    if (
+                        normalize_verification_number(x) == normalize_verification_number(proposed_answer)
+                        if question_type == "NUMBER"
+                        else (
+                            normalize_verification_text(x) == normalize_verification_text(proposed_answer)
+                            or normalize_verification_text(x) in normalize_verification_text(proposed_answer)
+                            or normalize_verification_text(proposed_answer) in normalize_verification_text(x)
+                        )
+                    )
+                ),
+                None
+            ),
+        }
+
+    # 2) guarded LLM fallback
+    llm_result = llm_verify_answer(
+        question=question,
+        question_type=question_type,
+        proposed_answer=proposed_answer,
+        expected_answers=expected_answers,
+    )
 
     return {
-        "family_id": family_id,
-        "partnernr": partnernr,
-        "post_verification_summary": build_post_verification_summary(merged_person),
+        "matched": bool(llm_result.get("matched", False)),
+        "method": "llm_fallback",
+        "matched_expected_answer": llm_result.get("matched_expected_answer"),
     }
-
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8003)
