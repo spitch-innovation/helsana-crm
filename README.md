@@ -1,628 +1,1115 @@
-# 🏥 Helsana CRM Search API & Voice Agent Integration
+# Helsana CRM Search API and VA Tooling
 
-A robust, AI-powered FastAPI service and conversational toolset built for the
-Helsana CRM Hackathon.
+This repository contains a FastAPI service and three frontend tool handlers for
+use in a voice assistant or chat assistant platform that supports both public
+and private tool state.
 
-This project solves a very specific contact-center problem: identifying a
-customer in CRM data even when the caller provides incomplete, messy, or
-phonetically distorted information, such as ASR output from a voice agent.
+The system has three stages:
 
-The current system is not just a fuzzy search API anymore. It is now a
-**three-stage customer handling flow** designed for a voice assistant (VA)
-platform:
+1. Customer lookup
+2. Identity verification
+3. Post-verification intent handling
 
-1. **Customer lookup** using deterministic matching first, then guarded LLM
-   fuzzy fallback.
-2. **Identity verification** using hidden expected answers stored in private
-   tool state.
-3. **Post-verification intent handling** using verified CRM context and a
-   tightly restricted set of supported intents.
+The backend reads CRM data from `./data/helsana-crm.csv`, keeps it in memory,
+and exposes endpoints for lookup, verification, and verified customer context.
 
-The API is built with FastAPI, uses a lightweight in-memory CSV-backed CRM
-corpus, and is designed to work cleanly with a platform that supports both
-**public** and **private** tool variables.
+## What the system does
 
----
+The service is built for caller identification from imperfect data.
 
-## ✨ What changed from the earlier version?
+Lookup supports:
 
-The original version focused mainly on fuzzy CRM lookup and returned lookup
-results and verification material in one broad response.
+- exact and normalized matching for structured fields
+- fallback fuzzy matching through an LLM when deterministic lookup is not
+  unique
+- safe public responses for the model
+- private responses containing hidden verification answers and full CRM context
 
-The current version introduces a much safer and more production-friendly
-pattern:
+Verification supports:
 
-- **Hybrid search**: exact / deterministic matching is attempted first.
-- **LLM fallback**: fuzzy matching is only used when deterministic search is
-  not uniquely successful.
-- **Public vs private response shaping**: safe data is returned to the model,
-  while hidden verification answers and rich CRM details stay private.
-- **Dedicated verification flow**: verification now has its own endpoint and
-  its own conversational tool behavior.
-- **Verified intent unlock**: post-verification account help is only available
-  after successful verification.
-- **VA platform alignment**: the design explicitly fits voice / chat agents
-  that can persist private tool state across turns.
+- one question at a time
+- answer checking against hidden expected answers
+- deterministic fast-path checking first
+- guarded LLM fallback for ASR noise and minor spelling variation
+- attempt tracking in private session state
 
----
-
-## 🏗 Architecture Overview
-
-The system consists of four coordinated layers:
-
-### 1. FastAPI backend (`helsana-crm.py`)
-
-The backend loads the Helsana CRM CSV into memory at startup, normalizes the
-columns, and exposes API endpoints for:
-
-- customer lookup,
-- verification question retrieval,
-- answer checking,
-- post-verification summary retrieval,
-- verified LLM intent context retrieval.
-
-### 2. Deterministic matcher
-
-The backend first attempts structured matching using normalized fields such as:
-
-- customer ID,
-- first name,
-- last name,
-- mobile number,
-- email,
-- birth date,
-- address parts.
-
-This gives the fastest and safest path when the caller provides clean data.
-
-### 3. LLM fuzzy fallback
-
-If deterministic lookup does not produce a unique person, the backend sends the
-raw query text plus the searchable CRM corpus to OpenAI and asks for the most
-likely matching `PARTNERNR` values.
-
-This is designed to handle:
-
-- ASR mistakes,
-- broken JSON,
-- inconsistent punctuation,
-- phonetically spelled email addresses,
-- lightly misspelled names,
-- loosely formatted phone numbers.
-
-### 4. VA platform tool layer
-
-On top of the FastAPI service, the solution provides three conversational tools
-for a voice assistant / agent platform:
-
-- `helsana_crm_lookup`
-- `helsana_verification`
-- `helsana_intents`
-
-These tools are designed for platforms that support:
-
-- public tool output visible to the model,
-- private tool output stored in session state,
-- multi-turn tool orchestration.
-
----
-
-## 🔐 Public vs Private Tool Variables
-
-This is one of the most important design changes.
-
-The VA platform can now store both **public** and **private** tool state.
-That lets the system separate safe conversational context from sensitive CRM
-material.
-
-### Public data
-
-Public data is safe for the model to use directly in the conversation.
-Examples:
-
-- lookup outcome,
-- safe hit summaries,
-- whether verification is required,
-- the next verification question text,
-- whether the caller has been verified,
-- which verified intents are available.
-
-### Private data
-
-Private data is kept hidden from the model and used only by backend logic or
-later tool calls. Examples:
-
-- full matched CRM hit payloads,
-- expected verification answers,
-- post-verification account context,
-- verification progress and attempt counters,
-- internal tool bookkeeping.
-
-### Why this matters
-
-This prevents the model from accidentally seeing or revealing:
-
-- hidden verification answers,
-- sensitive account details before verification,
-- internal state that should only drive backend logic.
-
-This is especially important in a voice assistant environment where the model
-must be able to continue the conversation naturally without ever leaking the
-answers to security questions.
-
----
-
-## 🔄 End-to-End Conversation Flow
-
-The intended flow in the VA platform is:
-
-1. Call `helsana_crm_lookup` when the caller provides identity details.
-2. If the lookup outcome is `none` or `multi`, collect more details and search
-   again.
-3. If the lookup outcome is `unique`, begin verification.
-4. Use `helsana_verification` to fetch the next question and check answers.
-5. Only after `verified: true`, call `helsana_intents`.
-6. Use the returned verified customer context to help with supported
-   post-verification intents.
-
----
-
-## 🚀 Quickstart
-
-### 1. Prerequisites
-
-Make sure you have:
-
-- Python 3.9+
-- an OpenAI API key
-- the CRM CSV at `./data/helsana-crm.csv`
-
-### 2. Install dependencies
-
-```bash
-pip install fastapi uvicorn pandas openai
-```
-
-### 3. Set environment variables
-
-Export your OpenAI API key before starting the service.
-
-**Mac / Linux**
-
-```bash
-export OPENAI_API_KEY="sk-your-openai-key-here"
-```
-
-**Windows (Command Prompt)**
-
-```cmd
-set OPENAI_API_KEY="sk-your-openai-key-here"
-```
-
-### 4. Run the server
-
-```bash
-python3 helsana-crm.py
-```
-
-The service starts on:
-
-```text
-http://0.0.0.0:8003
-```
-
-### 5. Open the built-in FastAPI docs
-
-FastAPI automatically serves interactive API documentation.
-
-- Swagger UI: `http://localhost:8003/docs`
-- ReDoc: `http://localhost:8003/redoc`
-
-These built-in docs are the best live reference for:
-
-- request bodies,
-- endpoint paths,
-- response shapes,
-- trying endpoints manually during development.
-
----
-
-## 🧠 Search and Verification Strategy
-
-### Hybrid lookup strategy
-
-The `/search` endpoint now uses a two-stage lookup strategy.
-
-#### Stage 1: deterministic lookup
-
-Structured fields are normalized and checked directly against the in-memory CRM
-rows.
-
-This includes normalization for:
-
-- case,
-- whitespace,
-- phone number formatting,
-- email formatting,
-- date parsing,
-- address field comparison.
-
-If deterministic matching finds:
-
-- **0 persons** → outcome is effectively unresolved
-- **1 person** → success with `deterministic_unique`
-- **multiple persons** → unresolved / ambiguous
-
-#### Stage 2: LLM fallback lookup
-
-If deterministic lookup is not uniquely successful, the backend falls back to an
-LLM-powered fuzzy search using the raw request body.
-
-This makes the service resilient to inputs like:
-
-- `{"last_name": "tarka"}`
-- `lastname müller and email is anna at gmail dot com`
-- broken JSON from an upstream tool
-- raw ASR transcripts
-
-The LLM returns matched `PARTNERNR` values only, and the backend then rebuilds
-family and person hits from the CRM rows.
-
-### Verification strategy
-
-Once a unique person is found, the backend generates up to two verification
-questions from allowed CRM-derived question types.
-
-The questions are safe in the public response, but the expected answers stay in
-private state.
-
-Verification itself uses:
-
-1. a deterministic answer matcher for exact / normalized checks,
-2. a guarded LLM fallback for minor ASR or phonetic variation.
-
-The verifier is intentionally strict. It is designed to tolerate light speech
-noise without becoming permissive across different entities.
-
----
-
-## 📦 Data Preparation and In-Memory Model
-
-At startup, the app reads the CRM CSV and normalizes it.
-
-### Data preparation steps
-
-- Read `./data/helsana-crm.csv`
-- Normalize the first column to `FAMILY_ID`
-- Fill missing values with empty strings
-- Trim all cells
-- Normalize a known trailing-space column naming issue for
-  `ZAHLUNGSMITTEL_INKASSO`
-
-### Searchable columns
-
-The fuzzy search corpus is built from a lightweight subset of columns:
-
-- `FAMILY_ID`
-- `PARTNERNR`
-- `last_name`
-- `first_name`
-- `TEL_PORTAL_MOBIL`
-- `EMAIL_PORTAL`
-- `GEB_D`
-- `STRASSE`
-- `HAUSNUMMER`
-- `PLZ`
-- `ORT`
-
-These rows are serialized into `SEARCH_CORPUS_JSON` and used by the LLM fallback
-search logic.
-
----
-
-## 🔍 API Endpoints
-
-The backend exposes the following endpoints.
-
-For the most accurate live contract, always refer to the FastAPI docs at:
-
-- `http://localhost:8003/docs`
-- `http://localhost:8003/redoc`
-
-### `POST /search`
-
-Primary customer lookup endpoint.
-
-#### Purpose
-
-- Accept structured JSON or raw text
-- Attempt deterministic lookup first
-- Fall back to LLM fuzzy search when needed
-- Return split public/private lookup results
-
-#### Request behavior
-
-The endpoint reads the raw request body. It supports:
-
-- valid JSON objects,
-- broken JSON,
-- plain text,
-- ASR transcripts.
-
-#### Public response highlights
-
-- `outcome`: `none`, `multi`, or `unique`
-- `lookup_strategy`
-- safe hit summaries
-- `verification_required`
-- safe verification question metadata
-
-#### Private response highlights
-
-- full CRM hit data
-- verification questions including `expected_answers`
-- post-verification summary data
-- lookup strategy bookkeeping
-
-### `POST /verification-questions`
-
-Explicit endpoint to regenerate or fetch verification questions for a specific
-person.
-
-#### Required input
-
-- `family_id`
-- `partnernr`
-
-#### Behavior
-
-- Finds the exact matched person
-- Builds up to `count` verification questions
-- Returns split public/private question payloads
-
-### `POST /verify-answer`
-
-Checks a caller's answer against hidden expected answers.
-
-#### Required input
-
-- `question`
-- `type`
-- `proposed_answer`
-- `expected_answers`
-
-#### Behavior
-
-- Uses deterministic verification first
-- Falls back to guarded LLM verification if needed
-- Returns whether the answer matched and by which method
-
-### `POST /post-verification-summary`
-
-Returns the CRM-derived summary used after successful verification.
-
-#### Required input
-
-- `family_id`
-- `partnernr`
-
-#### Behavior
-
-Returns split public/private post-verification data including:
-
-- bot-handled intents,
-- current franchise context,
-- current address context,
-- GP / insurance model context.
-
-### `POST /llm-post-verification-context`
-
-Returns the full verified context package intended for downstream LLM-guided
-intent handling.
-
-#### Required input
-
-- `family_id`
-- `partnernr`
-
-#### Behavior
-
-Returns:
-
-- verified status information,
-- globally allowed intents,
-- customer-available intents,
-- customer context,
-- an instruction block for downstream post-verification handling.
-
----
-
-## ✅ Verification Questions
-
-The backend generates verification questions from a controlled bank of allowed
-question types.
-
-Examples include:
-
-- franchise,
-- payment method,
-- basic insurance model,
-- insured products,
-- payout bank,
-- total premium,
-- GP name for applicable insurance models.
-
-Questions are only included when the corresponding CRM data is actually present
-and valid for that person.
-
-The public tool response exposes only safe metadata such as:
-
-- tag,
-- field,
-- question text,
-- question type.
-
-The private tool response additionally includes:
-
-- `expected_answers`
-
-These expected answers must never be exposed to the caller.
-
----
-
-## 🧰 VA Platform Integration
-
-This project is built to plug into a conversational platform where a model can
-call tools and the platform can persist both public and private state.
-
-The three main tools are described below.
-
-### 1. `helsana_crm_lookup`
-
-This tool identifies the caller from available identity data.
-
-#### When to use it
-
-Use it when:
-
-- the caller introduces themselves,
-- the caller provides personal details,
-- you need to locate the CRM record,
-- you need to refine a `none` or `multi` result.
-
-#### What it returns
-
-**Public**
-
-- success status,
-- search outcome,
-- safe hit data,
-- verification requirement,
-- safe verification question metadata.
-
-**Private**
-
-- full private CRM hits,
-- verification questions with expected answers,
-- post-verification summary,
-- original search payload,
-- source tool metadata.
-
-#### Important model rule
-
-A `unique` lookup result means the caller is identified well enough to begin
-verification, but **not yet verified**.
-
----
-
-### 2. `helsana_verification`
-
-This tool manages caller verification after a unique lookup.
-
-#### Supported actions
-
-- `get_question`
-- `check_answer`
-
-#### What it does
-
-- retrieves the next verification question,
-- checks the caller's answer using hidden expected answers,
-- tracks attempts and failures,
-- decides whether verification succeeds or fails.
-
-#### State it manages
-
-In session state, it maintains:
-
-- whether verification has started,
-- whether the caller is verified,
-- whether verification has failed,
-- current question index,
-- attempts per question,
-- total failures,
-- verification history.
-
-#### Safety rules
-
-- Ask one question at a time.
-- Never reveal expected answers.
-- Never help the caller guess.
-- Treat the caller as verified only when the tool returns `verified: true`.
-
----
-
-### 3. `helsana_intents`
-
-This tool is the post-verification unlock point.
-
-#### When to use it
-
-Use it only after verification has succeeded.
-
-#### Purpose
-
-It retrieves the verified caller's CRM context and tells the model exactly which
-intents are globally supported and which are available for this customer.
-
-#### Globally supported intents
+Post-verification intent handling supports only these intents:
 
 - `FRANCHISE_CHANGE`
 - `ADDRESS_CHANGE`
 - `GP_CHANGE`
 
-#### Important rules
+Anything outside those three intents is unsupported.
 
-- Any request outside those three intents is unsupported.
-- Even within those three, only intents with `available: true` may be handled.
-- The returned customer context can be used to answer current-account questions
-  related to those supported intents.
+## FastAPI app
 
----
+Main file:
 
-## 🪜 Recommended Voice Agent Orchestration
+```python
+python3 helsana-crm.py
+```
 
-A typical voice agent flow looks like this:
+The server runs on:
 
-### Step 1: identify the caller
+```text
+http://0.0.0.0:8003
+```
 
-Call `helsana_crm_lookup` with whatever identity data is available.
+Built-in API docs:
 
-- If `outcome = none`, ask for more identifying information.
-- If `outcome = multi`, ask for more identifying information.
-- If `outcome = unique`, move to verification.
+```text
+http://localhost:8003/docs
+http://localhost:8003/redoc
+```
 
-### Step 2: verify the caller
+Use the built-in FastAPI docs as the live reference for endpoint schemas,
+request bodies, and example calls.
 
-Use `helsana_verification` with `action: "get_question"`.
+## Installation
 
-Ask that one question to the caller.
+Requirements:
 
-When the caller answers, call `helsana_verification` with:
+- Python 3.9+
+- OpenAI API key
+- CRM CSV at `./data/helsana-crm.csv`
 
-- `action: "check_answer"`
-- `answer: "..."`
+Install dependencies:
 
-Repeat until the tool returns either:
+```bash
+pip install fastapi uvicorn pandas openai
+```
 
-- `verified: true`, or
-- `status: failed`
+Set the API key.
 
-### Step 3: unlock account help
+macOS / Linux:
 
-Once verified, call `helsana_intents` with the caller's current request.
+```bash
+export OPENAI_API_KEY="sk-your-openai-key-here"
+```
 
-Use the returned context to:
+Windows cmd:
 
-- answer current state questions,
-- handle supported intents,
-- refuse unsupported requests safely.
+```cmd
+set OPENAI_API_KEY="sk-your-openai-key-here"
+```
 
----
+Start the service:
 
-## 🧪 Example Lookup Output
+```bash
+python3 helsana-crm.py
+```
 
-A typical successful unique lookup now returns a split response like this:
+## Backend behavior
+
+### Data loading and normalization
+
+On startup, the backend:
+
+- loads `./data/helsana-crm.csv`
+- normalizes the first column to `FAMILY_ID`
+- strips whitespace from all fields
+- fills missing values with empty strings
+- normalizes a known trailing-space column name for
+  `ZAHLUNGSMITTEL_INKASSO`
+- builds an in-memory search corpus from selected searchable fields
+
+### Lookup strategy
+
+`/search` works in two stages.
+
+First it tries deterministic matching using structured fields such as:
+
+- `customer_id`
+- `first_name`
+- `last_name`
+- `tel_portal_mobil`
+- `email_portal`
+- `birthday`
+- `address.strasse`
+- `address.hausnummer`
+- `address.plz`
+
+Normalization includes:
+
+- lowercasing and whitespace cleanup for text
+- digit-only phone comparison
+- relaxed email normalization for spoken variants such as `at`, `ät`, `dot`,
+  and `punkt`
+- date normalization through pandas
+
+If deterministic lookup does not return a unique person, the backend sends the
+raw request text plus the searchable CRM corpus to the LLM and asks for matched
+`PARTNERNR` values.
+
+### Public and private response split
+
+The backend returns a split response:
+
+- `public`: safe for the model to see and use in conversation
+- `private`: hidden state for later verification and post-verification steps
+
+This is the core integration pattern for the VA platform.
+
+Public lookup data includes:
+
+- `outcome`
+- `lookup_strategy`
+- safe hit summaries
+- `verification_required`
+- verification questions without expected answers
+
+Private lookup data includes:
+
+- full matched hits
+- verification questions with `expected_answers`
+- post-verification summary
+- lookup strategy
+
+## Endpoints
+
+### `POST /search`
+
+Accepts either structured JSON or raw text. Returns public and private lookup
+results.
+
+Typical outcomes:
+
+- `none`
+- `multi`
+- `unique`
+
+If the outcome is `unique`, the backend also generates up to two verification
+questions for that person.
+
+Example request:
+
+```bash
+curl -X POST "http://localhost:8003/search" \
+  -H "Content-Type: application/json" \
+  -d '{"last_name":"Blessing","first_name":"Alan"}'
+```
+
+Example public response:
+
+```json
+{
+  "public": {
+    "outcome": "unique",
+    "lookup_strategy": "deterministic_unique",
+    "hits": [
+      {
+        "family_id": "123456",
+        "person_count": 1,
+        "members": [
+          {
+            "family_id": "123456",
+            "partnernr": "123456",
+            "display_name": "Alan Blessing"
+          }
+        ]
+      }
+    ],
+    "verification_required": true,
+    "verification_questions": [
+      {
+        "tag": "FRANCHISE",
+        "field": "FRANCHISE",
+        "question": "What is your selected franchise?",
+        "type": "NUMBER"
+      },
+      {
+        "tag": "PRODUKT",
+        "field": "PRODUKT",
+        "question": "Can you name at least one of your insured products?",
+        "type": "TEXT"
+      }
+    ]
+  }
+}
+```
+
+The private response also contains full CRM hits and hidden
+`expected_answers`.
+
+### `POST /verification-questions`
+
+Returns verification questions for a specific `family_id` and `partnernr`.
+
+Request body:
+
+```json
+{
+  "family_id": "123456",
+  "partnernr": "123456",
+  "count": 2
+}
+```
+
+Use this endpoint directly only if you need explicit question retrieval outside
+of the standard lookup flow.
+
+### `POST /verify-answer`
+
+Checks one verification answer against a provided set of expected answers.
+
+Request body:
+
+```json
+{
+  "question": "What is your selected franchise?",
+  "type": "NUMBER",
+  "proposed_answer": "1500",
+  "expected_answers": ["1500.0"]
+}
+```
+
+Example response:
+
+```json
+{
+  "matched": true,
+  "method": "deterministic",
+  "matched_expected_answer": "1500.0"
+}
+```
+
+The endpoint first tries deterministic verification. If that fails, it uses a
+strict LLM fallback for minor ASR or spelling variation.
+
+### `POST /post-verification-summary`
+
+Returns post-verification summary data for a verified person.
+
+Request body:
+
+```json
+{
+  "family_id": "123456",
+  "partnernr": "123456"
+}
+```
+
+### `POST /llm-post-verification-context`
+
+Returns the verified customer context and instruction block used by the VA
+platform after successful verification.
+
+Request body:
+
+```json
+{
+  "family_id": "123456",
+  "partnernr": "123456"
+}
+```
+
+The public response contains:
+
+- `verified: true`
+- globally supported intents
+- customer-available intents
+- customer context for those intents
+- an instruction block for the assistant
+
+## VA platform usage
+
+The intended frontend integration uses three tools:
+
+1. `helsana_crm_lookup`
+2. `helsana_verification`
+3. `helsana_intents`
+
+The platform must support:
+
+- public tool output visible to the model
+- private tool output stored in session state
+- reading private state from previous tool calls
+
+### Conversation flow
+
+1. Run lookup with any caller identity details you have.
+2. If lookup is `none` or `multi`, collect more details and run lookup again.
+3. If lookup is `unique`, start verification.
+4. Ask one verification question at a time.
+5. Check each answer through the verification tool.
+6. Only after `verified: true`, load intent context.
+7. Handle only supported and available intents.
+
+## Frontend tool definition: `helsana_crm_lookup`
+
+### Title
+
+```text
+title: helsana_crm_lookup
+```
+
+### Instructions
+
+```text
+Use this tool to identify a Helsana caller in the CRM using whatever identity
+ details the caller provides.
+
+This tool is for customer lookup only. Collect any available identifying
+information from the caller, such as customer ID, first name, last name,
+mobile number, email address, date of birth, or address details, and send
+those values to the CRM search service.
+
+Use this tool when:
+
+* the caller introduces themselves,
+* the caller provides personal details,
+* you need to locate the correct CRM record,
+* you need to narrow down none / multiple / unique customer matches.
+
+Important behavior:
+
+* Send whatever identifying fields you have; you do not need every field.
+* Use it again if the first search returns no match or multiple matches and
+  the caller provides more details.
+* A unique result means the caller is identified well enough to begin
+  verification, but not yet verified.
+* Do not treat the caller as verified just because the tool returns a unique
+  result.
+* Verification must be handled in later steps using dedicated verification
+  logic.
+* Do not reveal sensitive account details before verification succeeds.
+
+Tool response behavior:
+
+* The tool returns public lookup data to the model, such as:
+
+  * search outcome,
+  * safe hit information,
+  * whether verification is required.
+* The tool may also store private CRM data in session state for later
+  verification steps.
+* The model must rely only on the public tool response and must never assume
+  access to hidden verification answers or post-verification CRM details.
+```
+
+### Params
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "address": {
+      "type": "object",
+      "properties": {
+        "plz": {
+          "type": "string",
+          "description": "Postal code."
+        },
+        "strasse": {
+          "type": "string",
+          "description": "Street name."
+        },
+        "hausnummer": {
+          "type": "string",
+          "description": "House number."
+        }
+      },
+      "description": "Caller's address details, if provided.",
+      "additionalProperties": false
+    },
+    "birthday": {
+      "type": "string",
+      "description": "Caller's date of birth."
+    },
+    "last_name": {
+      "type": "string",
+      "description": "Caller's last name."
+    },
+    "first_name": {
+      "type": "string",
+      "description": "Caller's first name."
+    },
+    "customer_id": {
+      "type": "string",
+      "description": "Caller's customer ID if provided."
+    },
+    "email_portal": {
+      "type": "string",
+      "description": "Caller's email address."
+    },
+    "tel_portal_mobil": {
+      "type": "string",
+      "description": "Caller's mobile phone number."
+    }
+  },
+  "additionalProperties": false
+}
+```
+
+### Backend handler
+
+```javascript
+async (args) => {
+  const FASTAPI_BASE_URL = "http://127.0.0.1:8003";
+
+  const cleanString = (value) => {
+    if (value === null || value === undefined) return "";
+    return String(value).trim();
+  };
+
+  const cleanObject = (obj) => {
+    const out = {};
+    for (const [key, value] of Object.entries(obj || {})) {
+      if (value === null || value === undefined) continue;
+
+      if (typeof value === "string") {
+        const trimmed = value.trim();
+        if (trimmed !== "") out[key] = trimmed;
+        continue;
+      }
+
+      if (typeof value === "object" && !Array.isArray(value)) {
+        const nested = cleanObject(value);
+        if (Object.keys(nested).length > 0) {
+          out[key] = nested;
+        }
+        continue;
+      }
+
+      out[key] = value;
+    }
+    return out;
+  };
+
+  try {
+    const payload = cleanObject({
+      customer_id: cleanString(args.customer_id),
+      first_name: cleanString(args.first_name),
+      last_name: cleanString(args.last_name),
+      tel_portal_mobil: cleanString(args.tel_portal_mobil),
+      email_portal: cleanString(args.email_portal),
+      birthday: cleanString(args.birthday),
+      address: args.address
+        ? {
+          strasse: cleanString(args.address.strasse),
+          hausnummer: cleanString(args.address.hausnummer),
+          plz: cleanString(args.address.plz)
+        }
+        : undefined
+    });
+
+    if (Object.keys(payload).length === 0) {
+      return JSON.stringify({
+        public: {
+          success: false,
+          error: "At least one customer identity field must be provided."
+        }
+      });
+    }
+
+    const response = await fetch(`${FASTAPI_BASE_URL}/search`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(payload)
+    });
+
+    const text = await response.text();
+
+    if (!response.ok) {
+      return JSON.stringify({
+        public: {
+          success: false,
+          error: `CRM lookup failed with status ${response.status}`,
+          details: text
+        }
+      });
+    }
+
+    let result;
+    try {
+      result = JSON.parse(text);
+    } catch (parseError) {
+      return JSON.stringify({
+        public: {
+          success: false,
+          error: "CRM lookup returned invalid JSON.",
+          details: text
+        }
+      });
+    }
+
+    return JSON.stringify({
+      public: {
+        success: true,
+        ...(result.public || {})
+      },
+      private: {
+        source_tool: "helsana_crm_lookup",
+        search_payload: payload,
+        ...(result.private || {})
+      }
+    });
+  } catch (error) {
+    return JSON.stringify({
+      public: {
+        success: false,
+        error: error?.message || String(error)
+      }
+    });
+  }
+}
+```
+
+## Frontend tool definition: `helsana_verification`
+
+### Name
+
+```text
+name: helsana_verification
+```
+
+### Instructions
+
+```text
+Use this tool to manage caller identity verification after a unique CRM match
+has already been found.
+
+This tool works from the caller's saved private CRM lookup state and supports
+ two actions:
+
+* get_question: return the next verification question to ask
+* check_answer: verify the caller's answer against the hidden expected answers
+  stored in private session state
+
+Use this tool when:
+
+* the CRM lookup has returned a unique customer match,
+* you need to ask the next verification question,
+* the caller has answered a verification question and you need to check it,
+* you need to continue or fail the verification flow safely.
+
+Important behavior:
+
+* Use this tool only after a unique customer match has been found.
+* Never assume the caller is verified until this tool explicitly returns
+  verified: true.
+* Ask only one verification question at a time.
+* Do not reveal expected answers, hints, or hidden CRM data.
+* If the caller gives a wrong answer, do not help them guess.
+* If verification fails, explain that secure verification could not be
+  completed and move to the fallback process.
+
+Tool response behavior:
+
+* The tool returns only safe public verification data to the model.
+* The tool uses hidden private CRM lookup data already stored in session
+  state.
+* The tool manages verification progress, question order, attempts, and final
+  verification result.
+```
+
+### Params
+
+```json
+{
+  "type": "object",
+  "required": [
+    "action"
+  ],
+  "properties": {
+    "action": {
+      "enum": [
+        "get_question",
+        "check_answer"
+      ],
+      "type": "string",
+      "description": "Whether to fetch the next verification question or check the caller's answer."
+    },
+    "answer": {
+      "type": "string",
+      "description": "The caller's spoken answer to the current verification question. Only use this for check_answer."
+    }
+  },
+  "additionalProperties": false
+}
+```
+
+### Backend handler
+
+```javascript
+async (args, sessionContext) => {
+  const FASTAPI_BASE_URL = "http://127.0.0.1:8003";
+
+  const getLookupState = () => {
+    const state = sessionContext.getPrivateToolState
+      ? sessionContext.getPrivateToolState("helsana_crm_lookup")
+      : null;
+    return state || null;
+  };
+
+  const getVerificationBucket = () => {
+    const root = sessionContext.sessionState || {};
+    if (!root.helsana_verification) {
+      root.helsana_verification = {
+        started: false,
+        verified: false,
+        failed: false,
+        currentIndex: 0,
+        attemptsByTag: {},
+        maxAttemptsPerQuestion: 2,
+        maxTotalFailures: 3,
+        totalFailures: 0,
+        history: []
+      };
+    }
+    return root.helsana_verification;
+  };
+
+  const buildPublicError = (message) => ({
+    public: {
+      success: false,
+      error: message
+    }
+  });
+
+  const safeQuestionPublic = (question) => ({
+    tag: question.tag,
+    field: question.field,
+    type: question.type,
+    text: question.question
+  });
+
+  try {
+    const lookupState = getLookupState();
+    if (!lookupState) {
+      return JSON.stringify(buildPublicError(
+        "No CRM lookup state found. Please identify the caller first."
+      ));
+    }
+
+    const questions = Array.isArray(lookupState.verification_questions)
+      ? lookupState.verification_questions
+      : [];
+
+    if (!questions.length) {
+      return JSON.stringify(buildPublicError(
+        "No verification questions are available for this caller."
+      ));
+    }
+
+    const verification = getVerificationBucket();
+
+    if (verification.verified) {
+      return JSON.stringify({
+        public: {
+          success: true,
+          verified: true,
+          status: "verified",
+          message: "The caller has already been verified."
+        },
+        private: verification
+      });
+    }
+
+    if (verification.failed) {
+      return JSON.stringify({
+        public: {
+          success: true,
+          verified: false,
+          status: "failed",
+          message: "Verification has already failed."
+        },
+        private: verification
+      });
+    }
+
+    if (args.action === "get_question") {
+      const question = questions[verification.currentIndex];
+
+      if (!question) {
+        return JSON.stringify(buildPublicError(
+          "No further verification question is available."
+        ));
+      }
+
+      verification.started = true;
+
+      return JSON.stringify({
+        public: {
+          success: true,
+          verified: false,
+          status: "question",
+          question: safeQuestionPublic(question)
+        },
+        private: verification
+      });
+    }
+
+    if (args.action === "check_answer") {
+      const question = questions[verification.currentIndex];
+      if (!question) {
+        return JSON.stringify(buildPublicError(
+          "No active verification question is available."
+        ));
+      }
+
+      const answer = String(args.answer || "").trim();
+      if (!answer) {
+        return JSON.stringify(buildPublicError(
+          "A verification answer is required."
+        ));
+      }
+
+      const expectedAnswers = Array.isArray(question.expected_answers)
+        ? question.expected_answers.filter((x) => String(x || "").trim())
+        : [];
+
+      if (!expectedAnswers.length) {
+        return JSON.stringify(buildPublicError(
+          "No expected answers are available for the current verification question."
+        ));
+      }
+
+      const verifyResponse = await fetch(`${FASTAPI_BASE_URL}/verify-answer`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          question: question.question,
+          type: question.type,
+          proposed_answer: answer,
+          expected_answers: expectedAnswers
+        })
+      });
+
+      const verifyText = await verifyResponse.text();
+
+      if (!verifyResponse.ok) {
+        return JSON.stringify({
+          public: {
+            success: false,
+            error: `Verification check failed with status ${verifyResponse.status}`,
+            details: verifyText
+          }
+        });
+      }
+
+      let verifyResult;
+      try {
+        verifyResult = JSON.parse(verifyText);
+      } catch (parseError) {
+        return JSON.stringify({
+          public: {
+            success: false,
+            error: "Verification check returned invalid JSON.",
+            details: verifyText
+          }
+        });
+      }
+
+      const matched = !!verifyResult.matched;
+
+      verification.attemptsByTag[question.tag] =
+        (verification.attemptsByTag[question.tag] || 0) + 1;
+      verification.history.push({
+        tag: question.tag,
+        answer,
+        matched,
+        method: verifyResult.method || "unknown",
+        timestamp: new Date().toISOString()
+      });
+
+      if (!matched) {
+        verification.totalFailures += 1;
+
+        const questionAttempts = verification.attemptsByTag[question.tag];
+        const tooManyForQuestion =
+          questionAttempts >= verification.maxAttemptsPerQuestion;
+        const tooManyTotal =
+          verification.totalFailures >= verification.maxTotalFailures;
+
+        if (tooManyForQuestion || tooManyTotal) {
+          verification.failed = true;
+
+          return JSON.stringify({
+            public: {
+              success: true,
+              verified: false,
+              status: "failed",
+              message: "I’m sorry, I’m not able to verify your identity on this call."
+            },
+            private: verification
+          });
+        }
+
+        return JSON.stringify({
+          public: {
+            success: true,
+            verified: false,
+            status: "incorrect",
+            message: "That didn’t match. Please try again.",
+            question: safeQuestionPublic(question)
+          },
+          private: verification
+        });
+      }
+
+      const nextIndex = verification.currentIndex + 1;
+
+      if (nextIndex >= questions.length) {
+        verification.verified = true;
+        verification.currentIndex = nextIndex;
+
+        return JSON.stringify({
+          public: {
+            success: true,
+            verified: true,
+            status: "verified",
+            message: "Thank you. Your identity has been verified."
+          },
+          private: verification
+        });
+      }
+
+      verification.currentIndex = nextIndex;
+      const nextQuestion = questions[verification.currentIndex];
+
+      return JSON.stringify({
+        public: {
+          success: true,
+          verified: false,
+          status: "question",
+          message: "Thank you.",
+          question: safeQuestionPublic(nextQuestion)
+        },
+        private: verification
+      });
+    }
+
+    return JSON.stringify(buildPublicError(
+      "Unsupported verification action."
+    ));
+  } catch (error) {
+    return JSON.stringify({
+      public: {
+        success: false,
+        error: error?.message || String(error)
+      }
+    });
+  }
+}
+```
+
+## Frontend tool definition: `helsana_intents`
+
+### Name
+
+```text
+name: helsana_intents
+```
+
+### Instructions
+
+```text
+Use this tool only after caller identity has already been successfully
+verified.
+
+This tool retrieves the verified caller's post-verification CRM context and
+defines exactly which intents the bot may handle in this conversation.
+
+Use this tool when:
+
+* verification has succeeded,
+* you need the verified customer's available service context,
+* you need to know which supported intents are available for this customer,
+* you are about to answer or handle a request related to
+  FRANCHISE_CHANGE, ADDRESS_CHANGE, or GP_CHANGE.
+
+Important behavior:
+
+* Use this tool only after verification succeeds.
+* Do not use it before verification.
+* The only globally supported intents are:
+
+  * FRANCHISE_CHANGE
+  * ADDRESS_CHANGE
+  * GP_CHANGE
+* Any request outside those three intents is always unsupported.
+* Even among those three, only intents marked available for this customer may
+  be handled.
+* Use the returned customer context to answer questions like the current
+  franchise or current address.
+* If an intent is globally supported but unavailable for this customer,
+  explain that it is not available in the current context.
+* If a request is outside the three globally supported intents, refuse
+  politely.
+
+Tool response behavior:
+
+* Returns verified post-verification context for the caller.
+* Returns the globally supported intents, the customer-available intents, and
+  the customer context needed to handle them.
+* This tool is the unlock point for post-verification account help.
+```
+
+### Params
+
+```json
+{
+  "type": "object",
+  "required": [
+    "user_request"
+  ],
+  "properties": {
+    "user_request": {
+      "type": "string",
+      "description": "The caller's current request or question in natural language, for example: 'I want to change my franchise, but first remind me what my current one is.'"
+    }
+  },
+  "additionalProperties": false
+}
+```
+
+### Backend handler
+
+```javascript
+async (args, sessionContext) => {
+  const FASTAPI_BASE_URL = "http://127.0.0.1:8003";
+
+  const getLookupState = () => {
+    const state = sessionContext.getPrivateToolState
+      ? sessionContext.getPrivateToolState("helsana_crm_lookup")
+      : null;
+    return state || null;
+  };
+
+  const getVerificationState = () => {
+    const root = sessionContext.sessionState || {};
+    return root.helsana_verification || null;
+  };
+
+  const cleanString = (value) => {
+    if (value === null || value === undefined) return "";
+    return String(value).trim();
+  };
+
+  const buildPublicError = (message) => ({
+    public: {
+      success: false,
+      error: message
+    }
+  });
+
+  try {
+    const verificationState = getVerificationState();
+    if (!verificationState || verificationState.verified !== true) {
+      return JSON.stringify(buildPublicError("Caller is not verified yet."));
+    }
+
+    const userRequest = cleanString(args.user_request);
+    if (!userRequest) {
+      return JSON.stringify(buildPublicError("user_request is required."));
+    }
+
+    const lookupState = getLookupState();
+    if (!lookupState) {
+      return JSON.stringify(buildPublicError(
+        "No CRM lookup state found."
+      ));
+    }
+
+    const hits = Array.isArray(lookupState.hits) ? lookupState.hits : [];
+    const uniqueHit = hits.length === 1 ? hits[0] : null;
+    const members = uniqueHit && Array.isArray(uniqueHit.members)
+      ? uniqueHit.members
+      : [];
+    const person = members.length === 1 ? members[0] : null;
+
+    if (!uniqueHit || !person) {
+      return JSON.stringify(buildPublicError(
+        "No unique verified customer context is available."
+      ));
+    }
+
+    const family_id = String(
+      uniqueHit.family_id || person.FAMILY_ID || person.family_id || ""
+    ).trim();
+
+    const partnernr = String(
+      person.PARTNERNR || person.partnernr || ""
+    ).trim();
+
+    if (!family_id || !partnernr) {
+      return JSON.stringify(buildPublicError(
+        "Verified customer identifiers are missing."
+      ));
+    }
+
+    const response = await fetch(
+      `${FASTAPI_BASE_URL}/llm-post-verification-context`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          family_id,
+          partnernr,
+          user_request: userRequest
+        })
+      }
+    );
+
+    const text = await response.text();
+
+    if (!response.ok) {
+      return JSON.stringify({
+        public: {
+          success: false,
+          error: `Intent context lookup failed with status ${response.status}`,
+          details: text
+        }
+      });
+    }
+
+    let result;
+    try {
+      result = JSON.parse(text);
+    } catch (parseError) {
+      return JSON.stringify({
+        public: {
+          success: false,
+          error: "Intent context lookup returned invalid JSON.",
+          details: text
+        }
+      });
+    }
+
+    return JSON.stringify({
+      public: {
+        success: true,
+        ...(result.public || {})
+      },
+      private: {
+        source_tool: "helsana_intents",
+        family_id,
+        partnernr,
+        user_request: userRequest,
+        ...(result.private || {})
+      }
+    });
+  } catch (error) {
+    return JSON.stringify({
+      public: {
+        success: false,
+        error: error?.message || String(error)
+      }
+    });
+  }
+}
+```
+
+## Example lookup output
+
+Example public and private lookup response:
 
 ```json
 {
@@ -659,199 +1146,39 @@ A typical successful unique lookup now returns a split response like this:
     ]
   },
   "private": {
-    "hits": ["...full private CRM hit data..."],
     "verification_questions": [
       {
         "tag": "FRANCHISE",
         "field": "FRANCHISE",
         "question": "What is your selected franchise?",
         "type": "NUMBER",
-        "expected_answers": ["1500.0"]
+        "expected_answers": [
+          "1500.0"
+        ]
+      },
+      {
+        "tag": "PRODUKT",
+        "field": "PRODUKT",
+        "question": "Can you name at least one of your insured products?",
+        "type": "TEXT",
+        "expected_answers": [
+          "HOSPITAL ECO",
+          "SANA",
+          "TOP"
+        ]
       }
     ],
-    "post_verification_summary": {
-      "bot_handled_intents": [
-        "FRANCHISE_CHANGE",
-        "ADDRESS_CHANGE",
-        "GP_CHANGE"
-      ]
-    },
     "lookup_strategy": "deterministic_unique"
   }
 }
 ```
 
-This split shape is central to the new design.
+## Notes for the VA platform
 
----
-
-## 🧪 Testing with cURL
-
-### Basic structured lookup
-
-```bash
-curl -X POST "http://localhost:8003/search" \
-  -H "Content-Type: application/json" \
-  -d '{"last_name":"Blessing","first_name":"Alan"}' | python3 -m json.tool
-```
-
-### Fuzzy lookup with partial data
-
-```bash
-curl -X POST "http://localhost:8003/search" \
-  -H "Content-Type: application/json" \
-  -d '{"last_name":"tarka"}' | python3 -m json.tool
-```
-
-### Raw text / ASR-style lookup
-
-```bash
-curl -X POST "http://localhost:8003/search" \
-  -H "Content-Type: text/plain" \
-  --data 'my last name is müller and my email is anna at gmail dot com' \
-  | python3 -m json.tool
-```
-
-### Explicit verification question retrieval
-
-```bash
-curl -X POST "http://localhost:8003/verification-questions" \
-  -H "Content-Type: application/json" \
-  -d '{"family_id":"123456","partnernr":"123456","count":2}' \
-  | python3 -m json.tool
-```
-
-### Verification answer check
-
-```bash
-curl -X POST "http://localhost:8003/verify-answer" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "question":"What is your selected franchise?",
-    "type":"NUMBER",
-    "proposed_answer":"1500",
-    "expected_answers":["1500.0"]
-  }' | python3 -m json.tool
-```
-
-### Post-verification summary
-
-```bash
-curl -X POST "http://localhost:8003/post-verification-summary" \
-  -H "Content-Type: application/json" \
-  -d '{"family_id":"123456","partnernr":"123456"}' \
-  | python3 -m json.tool
-```
-
-### LLM-ready verified intent context
-
-```bash
-curl -X POST "http://localhost:8003/llm-post-verification-context" \
-  -H "Content-Type: application/json" \
-  -d '{"family_id":"123456","partnernr":"123456"}' \
-  | python3 -m json.tool
-```
-
----
-
-## 🛡 Security and Safety Notes
-
-This solution is intentionally designed to reduce leakage risk in a
-conversational setting.
-
-### Before verification
-
-Before successful verification, the model should only use public lookup data.
-It must not reveal:
-
-- hidden expected answers,
-- detailed private CRM fields,
-- post-verification customer context.
-
-### During verification
-
-The model must:
-
-- ask one question at a time,
-- avoid hints,
-- avoid multiple-choice guidance,
-- avoid confirming near misses,
-- fail safely when the tool says verification failed.
-
-### After verification
-
-Even after verification, the model is still constrained to the supported intent
-set and the customer's available service context.
-
----
-
-## 📁 Project Structure
-
-A minimal project layout could look like this:
-
-```text
-.
-├── data/
-│   └── helsana-crm.csv
-├── helsana-crm.py
-└── README.md
-```
-
----
-
-## 🧭 Why this design fits a VA platform
-
-Traditional REST integrations often assume that either:
-
-- the model sees everything, or
-- the backend handles everything without conversational state.
-
-A real voice assistant platform sits in between. It needs:
-
-- multi-turn state,
-- tool orchestration,
-- safe model-visible context,
-- hidden operational data,
-- strict security boundaries.
-
-This project is built exactly for that environment.
-
-It gives the model enough information to have a natural conversation, while the
-platform and backend retain control over sensitive verification material and
-verified account context.
-
-That makes it a strong pattern for:
-
-- customer identification,
-- secure caller verification,
-- controlled post-verification service flows.
-
----
-
-## 📖 Source of truth during development
-
-For implementation details, use both of these references together:
-
-1. **This README** for the architecture, flow, and VA platform integration.
-2. **FastAPI built-in docs** at `/docs` and `/redoc` for the exact live API
-   contract.
-
-The README explains the why and how.
-The FastAPI docs show the real running endpoint schema.
-
----
-
-## 🎯 Summary
-
-The current Helsana CRM solution is a hybrid deterministic + LLM customer lookup
-and verification service tailored for voice agents.
-
-It provides:
-
-- fuzzy CRM identification,
-- strict public/private tool data separation,
-- secure multi-step verification,
-- verified customer context retrieval,
-- controlled post-verification intent handling.
-
-In short: **identify, verify, unlock, then help safely**.
+- The model should only rely on `public` tool output.
+- Hidden verification answers must remain in `private` state.
+- Verification should never be skipped.
+- Post-verification context should only be loaded after
+  `helsana_verification` returns `verified: true`.
+- The FastAPI docs remain the source of truth for endpoint request and
+  response shapes.
