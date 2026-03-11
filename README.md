@@ -1,11 +1,7 @@
-This updated README reflects the transition from a simple search tool to a multi-stage **Identity & Access Management (IAM)** system. It now includes the **Hybrid Matcher**, **Security Verification**, and **Intent Guarding** logic.
-
----
-
 # 🏥 Helsana CRM: Identity & Intent API
 
-A sophisticated, AI-augmented CRM middleware built for high-stakes customer
-service. This system bridges the gap between messy, real-world inputs (like ASR
+An AI-augmented CRM middleware built for customer
+service identification. This system bridges the gap between messy, real-world inputs (like ASR
 transcripts) and secure, intent-based action handling for Helsana insurance.
 
 ## 🏗 System Architecture
@@ -126,8 +122,3 @@ curl -s -X POST "http://localhost:8003/verify-answer" \
      -H "Content-Type: application/json" | python3 -m json.tool --indent 2
 
 ```
-
----
-
-**Next Step**: Would you like me to generate a `docker-compose.yml` file to
-containerize this API for your deployment pipeline?
